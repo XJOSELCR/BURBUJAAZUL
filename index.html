@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 <style>
 :root{
   --ink:#0a2540; --ink-soft:#3f5a76; --muted:#7d93aa;
@@ -319,6 +320,15 @@ select{appearance:none;background-image:url("data:image/svg+xml,%3Csvg xmlns='ht
   <!-- ============ DATOS / EXCEL ============ -->
   <section class="view" id="view-datos">
     <div class="card">
+      <h2>Google Drive</h2>
+      <p class="hint">Guarda y sincroniza tu historial en tu Google Drive automáticamente. Ideal para usar la app en varios dispositivos.</p>
+      <div id="drive-status"></div>
+      <div class="btnbar no-print">
+        <button class="btn btn-primary" id="drive-connect">Conectar con Google Drive</button>
+        <button class="btn btn-ghost" id="drive-sync">Sincronizar ahora</button>
+      </div>
+    </div>
+    <div class="card">
       <h2>Respaldo y Excel</h2>
       <p class="hint">Todo se guarda solo en este dispositivo. Usa Excel para respaldar en OneDrive y pasar datos a otro equipo.</p>
       <div class="btnbar">
@@ -365,6 +375,13 @@ const KEY = "burbuja_azul_v1";
 const RANGOS = ["NORMAL","MEDIO","ALTO"];
 const ESTATUS = ["Cotizada","Aprobada","Terminada","Cancelada"];
 const badgeClass = {Cotizada:"b-cot",Aprobada:"b-apr",Terminada:"b-ter",Cancelada:"b-can"};
+
+/* ---------- Config Google Drive ---------- */
+const GDRIVE_CLIENT_ID = "270053014658-2cd11825afr662kisom6t3c3h7a23u2a.apps.googleusercontent.com";
+const GDRIVE_SCOPE = "https://www.googleapis.com/auth/drive.file";
+const GDRIVE_FILENAME = "BurbujaAzul_Historial_App.xlsx";
+const GDRIVE_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+let gToken=null, gTokenClient=null, gFileId=null, gConnected=false, gBusy=false;
 
 /* ---------- Estado ---------- */
 let store, state, draft;
@@ -533,7 +550,7 @@ $("#save-quote").onclick=()=>{
   if(!items.length){ toast("Agrega al menos un servicio"); return; }
   const q={num:nextNum(), cliente:cli, fecha:draft.fecha, estatus:"Cotizada",
            items:items.map(it=>({servicio:it.servicio,rango:it.rango,cant:+it.cant||1,traslado:+it.traslado||0}))};
-  store.historial.push(q); save();
+  store.historial.push(q); save(); gAutoUpload();
   toast("Cotización #"+q.num+" guardada", true);
   draft=newDraft(); fillClientes(); $("#q-fecha").value=draft.fecha; renderItems(); renderTotals();
 };
@@ -615,10 +632,10 @@ function openHist(h){
       </div>
     </div>`;
   $("#doc-overlay").classList.add("show");
-  $("#edit-save").onclick=()=>{h.estatus=$("#edit-est").value; save(); toast("Estatus actualizado",true); renderHist();};
+  $("#edit-save").onclick=()=>{h.estatus=$("#edit-est").value; save(); gAutoUpload(); toast("Estatus actualizado",true); renderHist();};
   $("#edit-del").onclick=()=>{
     if(!confirm("¿Eliminar la cotización #"+h.num+"?")) return;
-    store.historial=store.historial.filter(x=>x!==h); save();
+    store.historial=store.historial.filter(x=>x!==h); save(); gAutoUpload();
     $("#doc-overlay").classList.remove("show"); renderHist(); toast("Cotización eliminada");
   };
 }
@@ -756,16 +773,21 @@ function resumenRows(){
   return rows;
 }
 const r2 = n => Math.round((+n||0)*100)/100;
+function tabuladorRows(){ return [["Servicio","Químico","Desgaste","Insumos","Mano de obra","Utilidad","Total sin traslado"],
+  ...store.servicios.map(s=>[s.servicio,s.quimico,s.desgaste,s.quimico+s.desgaste,s.mano_obra,s.utilidad,s.quimico+s.desgaste+s.mano_obra+s.utilidad])]; }
+function clientesRows(){ return [["Nombre","Teléfono","Dirección"],...store.clientes.map(c=>[c.nombre,c.telefono||"",c.direccion||""])]; }
 function sheetFrom(rows){ return XLSX.utils.aoa_to_sheet(rows); }
-$("#exp-xlsx").onclick=()=>{
-  if(typeof XLSX==="undefined"){ toast("Sin internet para Excel; usa CSV"); return; }
+function buildWorkbook(){
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, sheetFrom(resumenRows()), "Resumen");
   XLSX.utils.book_append_sheet(wb, sheetFrom(historialRows()), "Historial");
-  XLSX.utils.book_append_sheet(wb, sheetFrom([["Servicio","Químico","Desgaste","Insumos","Mano de obra","Utilidad","Total sin traslado"],
-    ...store.servicios.map(s=>[s.servicio,s.quimico,s.desgaste,s.quimico+s.desgaste,s.mano_obra,s.utilidad,s.quimico+s.desgaste+s.mano_obra+s.utilidad])]), "Tabulador");
-  XLSX.utils.book_append_sheet(wb, sheetFrom([["Nombre","Teléfono","Dirección"],...store.clientes.map(c=>[c.nombre,c.telefono||"",c.direccion||""])]), "Clientes");
-  XLSX.writeFile(wb, "BurbujaAzul_Cotizaciones_"+todayISO()+".xlsx");
+  XLSX.utils.book_append_sheet(wb, sheetFrom(tabuladorRows()), "Tabulador");
+  XLSX.utils.book_append_sheet(wb, sheetFrom(clientesRows()), "Clientes");
+  return wb;
+}
+$("#exp-xlsx").onclick=()=>{
+  if(typeof XLSX==="undefined"){ toast("Sin internet para Excel; usa CSV"); return; }
+  XLSX.writeFile(buildWorkbook(), "BurbujaAzul_Cotizaciones_"+todayISO()+".xlsx");
   toast("Excel generado",true);
 };
 function download(name,text){ const b=new Blob([text],{type:"text/csv;charset=utf-8;"}); const a=el("a"); a.href=URL.createObjectURL(b); a.download=name; a.click(); }
@@ -792,21 +814,26 @@ $("#imp-file").onchange=e=>{
   };
   if(f.name.toLowerCase().endsWith(".csv")) rd.readAsText(f); else rd.readAsBinaryString(f);
 };
-function importHistorial(rows){
+function mergeHistorialRows(rows){
+  if(!rows||!rows.length) return -1;
   const head=rows[0].map(x=>String(x).toLowerCase());
   const ci=n=>head.findIndex(h=>h.includes(n));
   const iNum=ci("cotiza"),iCli=ci("cliente"),iFec=ci("fecha"),iEst=ci("estatus"),iSrv=ci("servicio"),iRan=ci("grado"),iCant=ci("cant"),iTra=ci("traslado");
-  if(iNum<0||iSrv<0){ toast("Formato no reconocido"); return; }
+  if(iNum<0||iSrv<0) return -1;
   const groups={};
   rows.slice(1).forEach(r=>{
     const num=+r[iNum]; if(!num) return;
     groups[num]=groups[num]||{num,cliente:r[iCli]||"",fecha:r[iFec]||"",estatus:r[iEst]||"Cotizada",items:[]};
-    if(r[iSrv]) groups[num].items.push({servicio:r[iSrv],rango:(r[iRan]||"NORMAL").toUpperCase(),cant:+r[iCant]||1,traslado:iTra>=0?(+r[iTra]||0):0});
+    if(r[iSrv]) groups[num].items.push({servicio:r[iSrv],rango:String(r[iRan]||"NORMAL").toUpperCase(),cant:+r[iCant]||1,traslado:iTra>=0?(+r[iTra]||0):0});
   });
-  const incoming=Object.values(groups);
   let added=0;
-  incoming.forEach(g=>{ if(!store.historial.some(h=>h.num===g.num && h.cliente===g.cliente)){ store.historial.push(g); added++; } });
-  save(); renderHist(); toast(added+" cotizaciones importadas",true);
+  Object.values(groups).forEach(g=>{ if(!store.historial.some(h=>h.num===g.num && (h.cliente||"")===(g.cliente||""))){ store.historial.push(g); added++; }});
+  return added;
+}
+function importHistorial(rows){
+  const n=mergeHistorialRows(rows);
+  if(n<0){ toast("Formato no reconocido"); return; }
+  save(); renderHist(); toast(n+" cotizaciones importadas",true);
 }
 
 /* ---------- Borrar ---------- */
@@ -818,7 +845,111 @@ $("#wipe").onclick=()=>{
   toast("Datos borrados");
 };
 
+/* ---------- Google Drive ---------- */
+function gInitClient(){
+  if(gTokenClient) return true;
+  if(!(window.google && google.accounts && google.accounts.oauth2)) return false;
+  gTokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GDRIVE_CLIENT_ID, scope: GDRIVE_SCOPE,
+    callback: async (resp)=>{
+      if(resp && resp.access_token){ gToken=resp.access_token;
+        try{ await gAfterAuth(); }catch(e){ toast("Error al conectar con Drive"); }
+      } else { toast("No se pudo obtener acceso a Drive"); }
+    }
+  });
+  return true;
+}
+function gConnect(){
+  if(typeof XLSX==="undefined"){ toast("Necesitas internet para usar Drive"); return; }
+  if(!gInitClient()){ toast("Google aún se está cargando, intenta de nuevo"); return; }
+  gTokenClient.requestAccessToken({prompt: gToken? "" : "consent"});
+}
+async function gApi(url, opts){
+  opts=opts||{}; opts.headers=Object.assign({Authorization:"Bearer "+gToken}, opts.headers||{});
+  const r=await fetch(url, opts);
+  if(r.status===401){ gToken=null; gConnected=false; renderDriveStatus(); throw new Error("token"); }
+  if(!r.ok) throw new Error("http "+r.status);
+  return r;
+}
+async function gFindFile(){
+  const q=encodeURIComponent(`name='${GDRIVE_FILENAME}' and trashed=false`);
+  const r=await gApi(`https://www.googleapis.com/drive/v3/files?q=${q}&spaces=drive&fields=files(id,name)`);
+  const j=await r.json();
+  return (j.files && j.files[0]) ? j.files[0].id : null;
+}
+async function gDownloadMerge(){
+  if(!gFileId) return 0;
+  const r=await gApi(`https://www.googleapis.com/drive/v3/files/${gFileId}?alt=media`);
+  const buf=await r.arrayBuffer();
+  try{
+    const wb=XLSX.read(new Uint8Array(buf),{type:"array"});
+    const sh=wb.Sheets["Historial"]; if(!sh) return 0;
+    const n=mergeHistorialRows(XLSX.utils.sheet_to_json(sh,{header:1}));
+    return n>0?n:0;
+  }catch(e){ return 0; }
+}
+function gWorkbookBlob(){
+  const out=XLSX.write(buildWorkbook(),{bookType:"xlsx",type:"array"});
+  return new Blob([out],{type:GDRIVE_MIME});
+}
+async function gUpload(){
+  const blob=gWorkbookBlob();
+  if(!gFileId){
+    const form=new FormData();
+    form.append("metadata", new Blob([JSON.stringify({name:GDRIVE_FILENAME, mimeType:GDRIVE_MIME})],{type:"application/json"}));
+    form.append("file", blob);
+    const r=await gApi("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",{method:"POST",body:form});
+    gFileId=(await r.json()).id;
+    try{ localStorage.setItem("ba_gfile",gFileId); }catch(e){}
+  } else {
+    await gApi(`https://www.googleapis.com/upload/drive/v3/files/${gFileId}?uploadType=media`,{method:"PATCH",body:blob,headers:{"Content-Type":GDRIVE_MIME}});
+  }
+}
+async function gAfterAuth(){
+  gBusy=true; renderDriveStatus();
+  try{ gFileId=localStorage.getItem("ba_gfile")||null; }catch(e){}
+  if(!gFileId) gFileId=await gFindFile();
+  let merged=0;
+  if(gFileId) merged=await gDownloadMerge();
+  await gUpload();
+  gConnected=true; gBusy=false; save(); renderDriveStatus(); renderHist();
+  toast(merged? `Conectado · ${merged} cotización(es) traídas de Drive` : "Conectado con Google Drive", true);
+}
+async function gSyncNow(){
+  if(!gConnected || !gToken){ gConnect(); return; }
+  gBusy=true; renderDriveStatus();
+  try{
+    if(!gFileId) gFileId=await gFindFile();
+    const merged=gFileId? await gDownloadMerge():0;
+    await gUpload(); save(); renderHist();
+    toast(merged? `Sincronizado · ${merged} nueva(s) de Drive` : "Sincronizado con Drive", true);
+  }catch(e){ toast(String(e.message).includes("token")?"La sesión expiró, reconecta":"Error al sincronizar"); }
+  gBusy=false; renderDriveStatus();
+}
+async function gAutoUpload(){
+  if(!gConnected || !gToken) return;
+  try{ await gUpload(); }catch(e){}
+}
+function renderDriveStatus(){
+  const s=$("#drive-status"); if(!s) return;
+  let html, connectLabel;
+  if(gBusy){ html=`<div class="info-box">Sincronizando con Google Drive…</div>`; connectLabel="Conectando…"; }
+  else if(gConnected){
+    html=`<div class="info-box" style="background:var(--ok-bg);border-color:#bfe6cf"><b>Conectado.</b> Tu historial se guarda en <b>${GDRIVE_FILENAME}</b> dentro de tu Google Drive y se actualiza solo al guardar cotizaciones.</div>`;
+    connectLabel="Reconectar";
+  } else {
+    html=`<div class="info-box">Sin conectar. Presiona el botón para entrar con tu cuenta de Google y activar el guardado automático en Drive.</div>`;
+    connectLabel="Conectar con Google Drive";
+  }
+  s.innerHTML=html;
+  const b=$("#drive-connect"); if(b){ b.textContent=connectLabel; b.disabled=gBusy; }
+  const sy=$("#drive-sync"); if(sy){ sy.disabled=gBusy || !gConnected; }
+}
+
 /* ---------- Init ---------- */
+$("#drive-connect").onclick=gConnect;
+$("#drive-sync").onclick=gSyncNow;
+renderDriveStatus();
 fillClientes();
 $("#q-fecha").value=draft.fecha;
 renderItems();
